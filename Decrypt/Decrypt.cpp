@@ -391,6 +391,7 @@ struct FlagState {
 	// Addresses for things which aren't flat memory are prefixed:
 	static const u64 kAddressRegs = 1ull << 48;
 	static const u64 kAddressRbp = 2ull << 48;
+	static const u64 kAddressRsp = 3ull << 48;
 
 	u32 Hash() {
 		u32 c = 0;
@@ -555,6 +556,9 @@ struct Disassembler {
 					if (baseReg == XED_REG_RBP) {
 						i64 disp = xed_operand_values_get_memory_displacement_int64(op);
 						fs.Forget(FlagState::kAddressRbp + disp);
+					} else if (baseReg == XED_REG_RSP) {
+						i64 disp = xed_operand_values_get_memory_displacement_int64(op);
+						fs.Forget(FlagState::kAddressRsp + disp);
 					}
 				}
 			} else if (reg0 != XED_REG_INVALID) {
@@ -614,6 +618,9 @@ struct Disassembler {
 						if (baseReg == XED_REG_RBP) {
 							i64 disp = xed_operand_values_get_memory_displacement_int64(op);
 							dstAddr = FlagState::kAddressRbp + disp;
+						} else if (baseReg == XED_REG_RSP) {
+							i64 disp = xed_operand_values_get_memory_displacement_int64(op);
+							dstAddr = FlagState::kAddressRsp + disp;
 						}
 					}
 				} else if (memSrc && !hasImm && reg0 != XED_REG_INVALID) {
@@ -624,6 +631,9 @@ struct Disassembler {
 						if (baseReg == XED_REG_RBP) {
 							i64 disp = xed_operand_values_get_memory_displacement_int64(op);
 							srcAddr = FlagState::kAddressRbp + disp;
+						} else if (baseReg == XED_REG_RSP) {
+							i64 disp = xed_operand_values_get_memory_displacement_int64(op);
+							srcAddr = FlagState::kAddressRsp + disp;
 						}
 					}
 				} else if (memDst && hasImm) {
@@ -640,6 +650,9 @@ struct Disassembler {
 						if (baseReg == XED_REG_RBP) {
 							i64 disp = xed_operand_values_get_memory_displacement_int64(op);
 							dstAddr = FlagState::kAddressRbp + disp;
+						} else if (baseReg == XED_REG_RSP) {
+							i64 disp = xed_operand_values_get_memory_displacement_int64(op);
+							dstAddr = FlagState::kAddressRsp + disp;
 						}
 					}
 				} else if (hasImm && reg0 != XED_REG_INVALID) {
