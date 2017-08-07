@@ -378,7 +378,6 @@ struct FlagState {
 	u32 of : 2;
 	// jcc combined logic:
 	// 2 when on the taken side of Jcc, 1 when on the not taken side
-	u32 jb : 2;
 	u32 jbe : 2;
 	u32 jl : 2;
 	u32 jle : 2;
@@ -387,11 +386,14 @@ struct FlagState {
 	u64 knownAddresses[16]; // 0 means unknown
 	i64 knownValues[16];
 	u8 knownValueSizes[16]; // in bits
+	u32 knownRegIndex;
+	u8 knownRegs[16];
+	i64 knownRegValues[16];
 
 	// Addresses for things which aren't flat memory are prefixed:
-	static const u64 kAddressRegs = 1ull << 48;
-	static const u64 kAddressRbp = 2ull << 48;
-	static const u64 kAddressRsp = 3ull << 48;
+	static const u64 kAddressRbp = 1ull << 48;
+	static const u64 kAddressRsp = 2ull << 48;
+	static const u64 kAddressMask = 0xffull << 48;
 
 	u32 Hash() {
 		u32 c = 0;
@@ -411,10 +413,37 @@ struct FlagState {
 				c = hashlittle(&sz, 1, c);
 			}
 		}
+
+		std::array<u8, 16> regNames;
+		for (int i = 0; i < 16; i++)
+			regNames[i] = knownRegs[i];
+		std::sort(regNames.begin(), regNames.end());
+		for (int i = 0; i < 16; i++) {
+			u64 a = regNames[i];
+			if (a == 0) continue;
+			i64 val;
+			u8 sz;
+			if (Knows(a, val, sz)) {
+				c = hashlittle(&a, 8, c);
+				c = hashlittle(&val, 8, c);
+				c = hashlittle(&sz, 1, c);
+			}
+		}
 		return c;
 	}
 
 	bool Knows(u64 address, i64 &value, u8 &size) {
+		if (address < 256) {
+			u8 regName = (u8)address;
+			for (u32 i = 0; i < 16; i++) {
+				if (knownRegs[i] == regName) {
+					value = knownRegValues[i];
+					size = 64;
+					return true;
+				}
+			}
+			return false;
+		}
 		for (u32 i = 0; i < 16; i++) {
 			if (knownAddresses[i] == address) {
 				value = knownValues[i];
@@ -426,6 +455,19 @@ struct FlagState {
 	}
 
 	void Forget(u64 address) {
+		if (address < 256) {
+			if (address == 0x58) {
+				printf("~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!* r14 doushite\n");
+			}
+			u8 regName = (u8)address;
+			for (u32 i = 0; i < 16; i++) {
+				if (knownRegs[i] == regName) {
+					knownRegs[i] = 0;
+					printf("forget   %13llx\n", address);
+				}
+			}
+			return;
+		}
 		for (u32 i = 0; i < 16; i++) {
 			if (knownAddresses[i] == address) {
 				knownAddresses[i] = 0;
@@ -435,9 +477,42 @@ struct FlagState {
 	}
 
 	void Remember(u64 address, i64 value, u8 size) {
-		printf("remember %12llx => %16llx\n", address, value);
+		printf("remember %13llx => %16llx\n", address, value);
+		if (address < 256) {
+			if (address == 0x58) {
+				printf("~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!*~!* r14 tasukete\n");
+			}
+			u8 regName = (u8)address;
+			for (u32 i = 0; i < 16; i++) {
+				if (knownRegs[i] == regName) {
+					knownRegValues[i] = value;
+					return;
+				}
+			}
+			// look for a free slot before going to the ring buffer
+			for (u32 i = 0; i < 16; i++) {
+				if (knownRegs[i] == 0) {
+					knownRegs[i] = regName;
+					knownRegValues[i] = value;
+					return;
+				}
+			}
+			knownRegs[knownRegIndex] = regName;
+			knownRegValues[knownRegIndex] = value;
+			knownRegIndex = (knownRegIndex + 1) & 15;
+			return;
+		}
 		for (u32 i = 0; i < 16; i++) {
 			if (knownAddresses[i] == address) {
+				knownValues[i] = value;
+				knownValueSizes[i] = size;
+				return;
+			}
+		}
+		// look for a free slot before going to the ring buffer
+		for (u32 i = 0; i < 16; i++) {
+			if (knownAddresses[i] == 0) {
+				knownAddresses[i] = address;
 				knownValues[i] = value;
 				knownValueSizes[i] = size;
 				return;
@@ -449,7 +524,7 @@ struct FlagState {
 		knownIndex = (knownIndex + 1) & 15;
 	}
 
-	static u64 RegisterAddress(xed_reg_enum_t reg) {
+	static u8 RegisterAddress(xed_reg_enum_t reg) {
 		if (reg >= XED_REG_AL && reg <= XED_REG_R15B) {
 			reg = (xed_reg_enum_t)(XED_REG_RAX + (reg - XED_REG_AL));
 		} else if (reg >= XED_REG_AX && reg <= XED_REG_R15W) {
@@ -457,7 +532,7 @@ struct FlagState {
 		} else if (reg >= XED_REG_EAX && reg <= XED_REG_R15D) {
 			reg = (xed_reg_enum_t)(XED_REG_RAX + (reg - XED_REG_EAX));
 		}
-		return kAddressRegs + 8 * reg;
+		return (u8)reg;
 	}
 };
 
@@ -479,6 +554,9 @@ struct Disassembler {
 		u32 flags;
 		u32 flagStates[8];
 		std::vector<u8 *> children;
+		u8 *firstParent;
+		FlagState prevState; // state at the start of the most recent emulation of this block
+		bool prevStateValid;
 	};
 	std::unordered_map<u8 *, Block> m_blocks;
 	Block *m_block;
@@ -504,6 +582,15 @@ struct Disassembler {
 	static const u16 kFlagCleared = 1;
 	static const u16 kFlagSet = 2;
 
+	void DebugDumpParents() {
+		auto b = m_block;
+		for (;;) {
+			printf("---> via %12llx\n", 0x140000000 + (b->head - m_base));
+			if (!m_blocks.count(b->firstParent)) break;
+			b = &m_blocks[b->firstParent];
+		}
+	}
+
 	void HandleInst() {
 		char buf[1024];
 		xed_decoded_inst_t inst;
@@ -515,6 +602,7 @@ struct Disassembler {
 		u64 rebased = m_originalBase + instRva;
 		if (err != XED_ERROR_NONE) {
 			printf("!!! decode error at 0x%016llx\n", rebased);
+			DebugDumpParents();
 			assert(false);
 		}
 		u32 length = xed_decoded_inst_get_length(&inst);
@@ -531,10 +619,7 @@ struct Disassembler {
 		const xed_simple_flag_t *flagsInfo = xed_decoded_inst_get_rflags_info(&inst);
 		FlagState fs = m_flagState;
 		if (flagsInfo && (flagsInfo->may_write || flagsInfo->must_write)) {
-			if (flagsInfo->written.s.cf) {
-				fs.cf = 0;
-				fs.jb = 0;
-			}
+			if (flagsInfo->written.s.cf) fs.cf = 0;
 			if (flagsInfo->written.s.pf) fs.pf = 0;
 			if (flagsInfo->written.s.af) fs.af = 0;
 			if (flagsInfo->written.s.zf) fs.zf = 0;
@@ -545,9 +630,11 @@ struct Disassembler {
 			if (flagsInfo->written.s.sf || flagsInfo->written.s.of) fs.jl = 0;
 			if (flagsInfo->written.s.sf || flagsInfo->written.s.of || flagsInfo->written.s.zf) fs.jle = 0;
 		}
-		if (rebased == 0x140028559)
+		if (rebased == 0x1400243fc) {
+			DebugDumpParents();
 			printf("break");
-		{
+		}
+		if (iclass != XED_ICLASS_CMP && iclass != XED_ICLASS_TEST) {
 			bool memDst = xed_decoded_inst_mem_written(&inst, 0);
 			xed_reg_enum_t reg0 = xed_decoded_inst_get_reg(&inst, XED_OPERAND_REG0);
 			if (memDst) {
@@ -583,6 +670,16 @@ struct Disassembler {
 			break;
 		case XED_CATEGORY_CALL:
 			call = true;
+			for (u32 i = 0; i < 16; i++) {
+				switch (fs.knownRegs[i]) {
+				case (u8)XED_REG_R14:
+					continue;
+				}
+				fs.knownRegs[i] = 0;
+			}
+			for (u32 i = 0; i < 16; i++) {
+				fs.knownAddresses[i] = 0;
+			}
 			break;
 		}
 		bool jccIsJmp = false;
@@ -590,7 +687,7 @@ struct Disassembler {
 		xed_reg_enum_t reg;
 		u64 imm;
 		switch (iclass) {
-			case XED_ICLASS_HLT: // try and clear this out...
+			case XED_ICLASS_HLT: // ida won't decode past hlt, but will past int3
 				*m_ip = 0xcc;
 				break;
 
@@ -681,10 +778,9 @@ struct Disassembler {
 			} break;
 			// CF=1
 			case XED_ICLASS_JB:
-				jccIsJmp = m_flagState.jb == kFlagSet ||
-					m_flagState.cf == kFlagSet;
-				taken.jb = kFlagSet;
-				notTaken.jb = kFlagCleared;
+				jccIsJmp = m_flagState.cf == kFlagSet;
+				taken.cf = kFlagSet;
+				notTaken.cf = kFlagCleared;
 				break;
 			// CF=1 or ZF=1
 			case XED_ICLASS_JBE:
@@ -715,10 +811,9 @@ struct Disassembler {
 				break;
 			// CF=0
 			case XED_ICLASS_JNB:
-				jccIsJmp = m_flagState.jb == kFlagCleared ||
-					m_flagState.cf == kFlagCleared;
-				taken.jb = kFlagCleared;
-				notTaken.jb = kFlagSet;
+				jccIsJmp = m_flagState.cf == kFlagCleared;
+				taken.cf = kFlagCleared;
+				notTaken.cf = kFlagSet;
 				break;
 			// CF=0 and ZF=0
 			case XED_ICLASS_JNBE:
@@ -828,7 +923,16 @@ struct Disassembler {
 			case XED_ICLASS_ADD: {
 				bool hasImm = xed_operand_values_has_immediate(op);
 				xed_reg_enum_t reg0 = xed_decoded_inst_get_reg(&inst, XED_OPERAND_REG0);
-				if (hasImm && reg0 != XED_REG_INVALID) {
+				xed_reg_enum_t reg1 = xed_decoded_inst_get_reg(&inst, XED_OPERAND_REG1);
+				if (!hasImm && reg0 != XED_REG_INVALID && reg1 != XED_REG_INVALID) {
+					u64 dstAddr = FlagState::RegisterAddress(reg0);
+					u64 srcAddr = FlagState::RegisterAddress(reg1);
+					i64 dstVal, srcVal;
+					u8 dstSz, srcSz;
+					if (m_flagState.Knows(dstAddr, dstVal, dstSz) && m_flagState.Knows(srcAddr, srcVal, srcSz)) {
+						fs.Remember(dstAddr, dstVal + srcVal, dstSz);
+					}
+				} else if (hasImm && reg0 != XED_REG_INVALID) {
 					u64 dstAddr = FlagState::RegisterAddress(reg0);
 					i64 immVal = xed_operand_values_get_immediate_int64(op);
 					i64 dstVal;
@@ -842,7 +946,20 @@ struct Disassembler {
 			case XED_ICLASS_SUB: {
 				bool hasImm = xed_operand_values_has_immediate(op);
 				xed_reg_enum_t reg0 = xed_decoded_inst_get_reg(&inst, XED_OPERAND_REG0);
-				if (hasImm && reg0 != XED_REG_INVALID) {
+				xed_reg_enum_t reg1 = xed_decoded_inst_get_reg(&inst, XED_OPERAND_REG1);
+				if (!hasImm && reg0 != XED_REG_INVALID && reg1 != XED_REG_INVALID) {
+					u64 dstAddr = FlagState::RegisterAddress(reg0);
+					if (reg0 == reg1) {
+						fs.Remember(dstAddr, 0, 64);
+					} else {
+						u64 srcAddr = FlagState::RegisterAddress(reg1);
+						i64 dstVal, srcVal;
+						u8 dstSz, srcSz;
+						if (m_flagState.Knows(dstAddr, dstVal, dstSz) && m_flagState.Knows(srcAddr, srcVal, srcSz)) {
+							fs.Remember(dstAddr, dstVal - srcVal, dstSz);
+						}
+					}
+				} else if (hasImm && reg0 != XED_REG_INVALID) {
 					u64 dstAddr = FlagState::RegisterAddress(reg0);
 					i64 immVal = xed_operand_values_get_immediate_int64(op);
 					i64 dstVal;
@@ -854,15 +971,28 @@ struct Disassembler {
 			} break;
 
 			case XED_ICLASS_XOR: {
+				bool hasImm = xed_operand_values_has_immediate(op);
 				xed_reg_enum_t reg0 = xed_decoded_inst_get_reg(&inst, XED_OPERAND_REG0);
 				xed_reg_enum_t reg1 = xed_decoded_inst_get_reg(&inst, XED_OPERAND_REG1);
-				if (reg0 != XED_REG_INVALID && reg1 != XED_REG_INVALID) {
+				if (!hasImm && reg0 != XED_REG_INVALID && reg1 != XED_REG_INVALID) {
 					u64 dstAddr = FlagState::RegisterAddress(reg0);
-					u64 srcAddr = FlagState::RegisterAddress(reg1);
-					i64 dstVal, srcVal;
-					u8 dstSz, srcSz;
-					if (m_flagState.Knows(dstAddr, dstVal, dstSz) && m_flagState.Knows(srcAddr, srcVal, srcSz)) {
-						fs.Remember(dstAddr, dstVal ^ srcVal, dstSz);
+					if (reg0 == reg1) {
+						fs.Remember(dstAddr, 0, 64);
+					} else {
+						u64 srcAddr = FlagState::RegisterAddress(reg1);
+						i64 dstVal, srcVal;
+						u8 dstSz, srcSz;
+						if (m_flagState.Knows(dstAddr, dstVal, dstSz) && m_flagState.Knows(srcAddr, srcVal, srcSz)) {
+							fs.Remember(dstAddr, dstVal ^ srcVal, dstSz);
+						}
+					}
+				} else if (hasImm && reg0 != XED_REG_INVALID) {
+					u64 dstAddr = FlagState::RegisterAddress(reg0);
+					i64 immVal = xed_operand_values_get_immediate_int64(op);
+					i64 dstVal;
+					u8 dstSz;
+					if (m_flagState.Knows(dstAddr, dstVal, dstSz)) {
+						fs.Remember(dstAddr, dstVal ^ immVal, dstSz);
 					}
 				}
 			} 
@@ -943,10 +1073,16 @@ struct Disassembler {
 			assert(lastIp != jumpTarget);
 			u32 nopSize = jumpTarget - lastIp;
 			memset(lastIp, 0x90, nopSize);
+			// change the next instruction(s) from jcc to jmp
+			// if we loop back over that instruction the flags will become indeterminate,
+			// and we won't be able to resolve that it should be a jmp then.
+			u8 *jccIp = lastIp + nopSize;
+			while (*jccIp == 0x90) jccIp++;
+			while (*jccIp == *m_ip) {
+				*jccIp = 0xeb;
+				jccIp += 2 + jccIp[1];
+			}
 			memset(&m_addrFlags[lastIp - m_base], kAddrOneByteInst | kAddrStartInst, nopSize);
-			// go ahead and replace jcc with jmp
-			assert(*m_ip != 0xf);
-			*m_ip = 0xeb;
 			m_block->extent -= m_ip - lastIp;
 			Branch(lastIp, fs);
 			m_ip = 0;
@@ -959,6 +1095,7 @@ struct Disassembler {
 			// assert(*m_ip != 0xf);
 			// *m_ip = 0xeb;
 			jmp = true;
+			fs = taken;
 			m_replacements++;
 			m_addrFlags[m_ip - m_base] |= kAddrBranchTaken;
 			if ((m_addrFlags[m_ip - m_base] & branchesTaken) == branchesTaken) {
@@ -976,8 +1113,8 @@ struct Disassembler {
 			} else {
 				m_block->flags |= kBlockExitsAssumedBranch;
 			}
-		} else {
-			m_addrFlags[m_ip - m_base] &= ~branchesTaken;
+		} else if (branch) {
+			m_addrFlags[m_ip - m_base] |= branchesTaken;
 			m_block->flags &= ~kBlockExitsAssumedBranch;
 		}
 		m_ip += length;
@@ -1018,8 +1155,10 @@ struct Disassembler {
 					// jcc => nop
 					memset(ip, 0x90, length);
 				} else if (fb == kAddrBranchTaken) {
-					assert(*ip != 0xf);
-					*ip = 0xeb;
+					if((*ip & 0xf0) == 0x70)
+						*ip = 0xeb;
+					else
+						printf("!!! not replacing far jmp !!!\n");
 				}
 			}
 		}
@@ -1041,6 +1180,7 @@ struct Disassembler {
 				auto b2 = AddBlock(ip, b + be - ip);
 				b2->children = block.children;
 				b2->flags = block.flags;
+				b2->firstParent = b;
 				block.children.clear();
 				block.children.push_back(ip);
 				newBlock = false;
@@ -1053,10 +1193,11 @@ struct Disassembler {
 			m_flagStack.push_back(fs);
 			auto b = AddBlock(ip);
 			b->flagStates[0] = branchHash;
+			b->firstParent = m_block->head;
 		} else {
 			auto &b = m_blocks[ip];
 			u32 blockFlags = BlockFlagsWithChildren(b);
-			if (blockFlags & kBlockExitsAssumedBranch) {
+			if (true || (blockFlags & kBlockExitsAssumedBranch)) {
 				bool stateIsDifferent = true;
 				int freeIdx = 8;
 				for (int i = 0; i < 8; i++) {
@@ -1144,8 +1285,10 @@ struct Disassembler {
 
 	void AddFunction(u8 *ip) {
 		m_block = AddBlock(ip, 0);
+		m_block->prevStateValid = true;
 		m_ip = ip;
 		m_addrFlags[ip - m_base] |= kAddrStartFunction;
+		memset(&m_flagState, 0, sizeof(m_flagState));
 	}
 
 	Block *AddBlock(u8 *ip, u32 size = 0) {
@@ -1162,10 +1305,6 @@ struct Disassembler {
 			while (m_ip) {
 				u8 *ip = m_ip;
 				HandleInst();
-				// If we run up against an already-decoded block, don't disassemble it again:
-				if (m_blocks.count(m_ip)) {
-					m_ip = 0;
-				}
 			}
 
 			if (m_heads.size()) {
@@ -1175,8 +1314,40 @@ struct Disassembler {
 				m_flagStack.pop_back();
 				// set m_blockIndex according to m_ip:
 				m_block = &m_blocks[m_ip];
+				if (m_block->prevStateValid) {
+					MergeFlagState(m_block->prevState);
+				}
+				m_block->prevState = m_flagState;
+				m_block->prevStateValid = true;
 			}
 		} while (m_ip);
+	}
+
+	void MergeFlagState(FlagState &fs) {
+		if (m_flagState.cf != fs.cf) m_flagState.cf = kFlagIndeterminate;
+		if (m_flagState.pf != fs.pf) m_flagState.pf = kFlagIndeterminate;
+		if (m_flagState.af != fs.af) m_flagState.af = kFlagIndeterminate;
+		if (m_flagState.zf != fs.zf) m_flagState.zf = kFlagIndeterminate;
+		if (m_flagState.sf != fs.sf) m_flagState.sf = kFlagIndeterminate;
+		if (m_flagState.df != fs.df) m_flagState.df = kFlagIndeterminate;
+		if (m_flagState.of != fs.of) m_flagState.of = kFlagIndeterminate;
+		if (m_flagState.jbe != fs.jbe) m_flagState.jbe = kFlagIndeterminate;
+		if (m_flagState.jl != fs.jl) m_flagState.jl = kFlagIndeterminate;
+		if (m_flagState.jle != fs.jle) m_flagState.jle = kFlagIndeterminate;
+		for (u32 i = 0; i < 64; i++) {
+			u64 addr = 0;
+			if (i < 16)      addr = m_flagState.knownAddresses[i&15];
+			else if (i < 32) addr =          fs.knownAddresses[i&15];
+			else if (i < 48) addr = m_flagState.knownRegs[i&15];
+			else             addr =          fs.knownRegs[i&15];
+			if (addr == 0) continue;
+			i64 aVal, bVal;
+			u8 aSz, bSz;
+			bool aKnows = m_flagState.Knows(addr, aVal, aSz);
+			bool bKnows = fs.Knows(addr, bVal, bSz);
+			if (aKnows && bKnows && aVal == bVal) continue;
+			m_flagState.Forget(addr);
+		}
 	}
 };
 
@@ -1213,7 +1384,7 @@ void Decrypt(PEReader *pe, u8 *baseAddr) {
 			break;
 		}
 	}
-	{
+	if (dis.callRvas.size() > 0) {
 		u8 *next = pe->TranslateRVA(dis.callRvas[0]);
 		dis.AddFunction(next);
 		dis.Run();
